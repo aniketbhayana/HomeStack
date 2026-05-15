@@ -1,0 +1,17 @@
+{
+  "name": "api",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "nodemon --watch src --ext ts --exec ts-node src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ioredis": "^5.10.1",
+    "playwright": "^1.60.0",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/uuid": "^11.0.0"
+  }
+}

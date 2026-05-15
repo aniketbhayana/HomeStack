@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Property {
+  id            String   @id @default(uuid())
+  title         String
+  bhk           Int
+  propertyType  String   @default("apartment")
+  priceTotal    BigInt
+  pricePerSqft  Int?
+  areaSqft      Int
+  furnished     String   @default("unfurnished")
+  floor         Int?
+  totalFloors   Int?
+  amenities     String[]
+  lat           Float
+  lng           Float
+  locality      String
+  city          String
+  pincode       String?
+  locationScore Int      @default(0)
+  sentimentScore Int     @default(0)
+  pros          String[]
+  cons          String[]
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  shortlists    Shortlist[]
+  nearbyPlaces  NearbyPlace[]
+}
+
+model User {
+  id          String      @id @default(uuid())
+  email       String      @unique
+  name        String?
+  clerkId     String      @unique
+  preferences Json?
+  createdAt   DateTime    @default(now())
+
+  shortlists  Shortlist[]
+}
+
+model Shortlist {
+  id         String   @id @default(uuid())
+  userId     String
+  propertyId String
+  notes      String?
+  createdAt  DateTime @default(now())
+
+  user       User     @relation(fields: [userId], references: [id])
+  property   Property @relation(fields: [propertyId], references: [id])
+
+  @@unique([userId, propertyId])
+}
+
+model NearbyPlace {
+  id         String   @id @default(uuid())
+  propertyId String
+  placeType  String
+  name       String
+  distanceM  Int
+  rating     Float?
+  fetchedAt  DateTime @default(now())
+
+  property   Property @relation(fields: [propertyId], references: [id])
+}
