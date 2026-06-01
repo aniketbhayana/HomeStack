@@ -1,11 +1,17 @@
 import { chromium } from 'playwright'
 import { normalizeProperty } from '../normalizer/normalize'
 import { NormalizedProperty } from '../session/sessionStore'
+import { SearchParams } from '../orchestrator/searchOrchestrator'
 
-export async function searchNoBroker(query: string): Promise<NormalizedProperty[]> {
+export async function searchNoBroker(
+  params: SearchParams & { resolvedUrl?: string }
+): Promise<NormalizedProperty[]> {
+  const { query, city, resolvedUrl } = params
+  console.log('[nobroker] Launching browser...')
+
   const browser = await chromium.launch({
     headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
   })
 
   const context = await browser.newContext({
@@ -17,35 +23,96 @@ export async function searchNoBroker(query: string): Promise<NormalizedProperty[
   const results: NormalizedProperty[] = []
 
   try {
-    const searchUrl = `https://www.nobroker.in/property/sale/bangalore/?searchParam=${encodeURIComponent(query)}`
-    await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
-    await page.waitForSelector('.top-area-data', { timeout: 10000 }).catch(() => {})
+    const url = resolvedUrl || `https://www.nobroker.in/property/sale/${city.toLowerCase()}/?searchParam=${encodeURIComponent(query)}`
+    console.log('[nobroker] URL:', url)
 
-    const rawListings = await page.evaluate(() => {
-      const cards = document.querySelectorAll('.top-area-data')
-      const extracted: any[] = []
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
+    await page.waitForTimeout(5000)
 
-      cards.forEach((card, i) => {
-        if (i >= 5) return
-        extracted.push({
-          title: card.querySelector('.prop-heading')?.textContent?.trim() || '',
-          price: card.querySelector('.price-sp')?.textContent?.trim() || '',
-          area: card.querySelector('.prop-area')?.textContent?.trim() || '',
-          locality: card.querySelector('.loc-name')?.textContent?.trim() || '',
-          url: (card.closest('a') as HTMLAnchorElement)?.href || '',
-          imageUrl: (card.querySelector('img') as HTMLImageElement)?.src || ''
-        })
-      })
+    const data = await page.evaluate(() => {
+      const projectTitle = document.title.split(' -')[0].split('|')[0].trim()
 
-      return extracted
+      const configs: Array<{ bhk: string; price: string; area: string; url: string }> = []
+      const seen = new Set<string>()
+
+      // Real selectors from DOM inspection:
+      // "text-xl font-bold text-[#333333]" → price like "₹85 L"
+      // "text-[#363636] text-base font-semibold" → "3, 4 BHK"
+      // "text-lg font-semibold text-[#363636] w-[70%]" → listing title with BHK
+
+      // Individual listings on project page
+      const listingTitles = Array.from(document.querySelectorAll('[class*="text-lg"][class*="font-semibold"][class*="text-[#363636]"]'))
+        .filter(el => el.textContent?.includes('BHK'))
+
+      const listingPrices = Array.from(document.querySelectorAll('[class*="text-xl"][class*="font-bold"][class*="text-[#333333]"]'))
+
+      const count = Math.min(listingTitles.length, listingPrices.length, 5)
+
+      for (let i = 0; i < count; i++) {
+        const titleText = listingTitles[i]?.textContent?.trim() || ''
+        const priceText = listingPrices[i]?.textContent?.trim() || ''
+        const bhkMatch = titleText.match(/(\d)\s*BHK/)
+        const key = `${titleText}-${priceText}`
+
+        if (!seen.has(key)) {
+          seen.add(key)
+          const anchor = listingTitles[i]?.closest('a') as HTMLAnchorElement
+          configs.push({
+            bhk: bhkMatch ? bhkMatch[1] : '',
+            price: priceText,
+            area: '',
+            url: anchor?.href || window.location.href
+          })
+        }
+      }
+
+      // Fallback: get project-level BHK config
+      if (configs.length === 0) {
+        const projectBhk = document.querySelector('[class*="text-[#363636]"][class*="font-semibold"][class*="w-full"]')
+        const projectPrice = document.querySelector('[class*="text-xl"][class*="font-bold"]')
+
+        if (projectBhk || projectPrice) {
+          configs.push({
+            bhk: projectBhk?.textContent?.trim().match(/(\d)/)?.[1] || '',
+            price: projectPrice?.textContent?.trim() || '',
+            area: '',
+            url: window.location.href
+          })
+        }
+      }
+
+      const locality = document.querySelector('[class*="text-[13px]"][class*="text-gray"]')
+        ?.textContent?.trim() || ''
+
+      return { projectTitle, configs, locality }
     })
 
-    for (const raw of rawListings) {
-      results.push(normalizeProperty({ ...raw, city: 'Bengaluru' }, 'nobroker'))
+    console.log(`[nobroker] Project: ${data.projectTitle}, Configs: ${data.configs.length}`)
+
+    for (const config of data.configs) {
+      results.push(normalizeProperty({
+        title: `${data.projectTitle}${config.bhk ? ` — ${config.bhk} BHK` : ''}`,
+        price: config.price,
+        area: config.area,
+        locality: data.locality,
+        city,
+        url: config.url
+      }, 'nobroker'))
+    }
+
+    if (results.length === 0) {
+      results.push(normalizeProperty({
+        title: data.projectTitle,
+        price: '',
+        area: '',
+        locality: data.locality,
+        city,
+        url: resolvedUrl || ''
+      }, 'nobroker'))
     }
 
   } catch (err) {
-    console.error('NoBroker scraper error:', err)
+    console.error('[nobroker] Error:', err)
   } finally {
     await browser.close()
   }
