@@ -1,95 +1,81 @@
 import { sessionStore } from '../session/sessionStore'
 import { searchMagicBricks } from '../scrapers/magicbricks'
-import { searchNoBroker } from '../scrapers/nobroker'
-import { findAllPortalUrls } from '../services/googleSearch'
 import { search99Acres } from '../scrapers/99acres'
+import { searchNoBroker } from '../scrapers/nobroker'
+import { fetchPropertyReviews } from '../scrapers/reviews'
+import { validateProperty } from '../normalizer/validate'
+import { deduplicateListings } from '../normalizer/dedupe'
+import { rankListings } from '../normalizer/rank'
 
 export interface SearchParams {
   query: string
   city: string
-  bhk?: string
+  bhk: string
 }
 
-// Fallback URLs if Google search fails
-function getFallbackUrls(params: SearchParams) {
-  const { query, city, bhk } = params
-  const encoded = encodeURIComponent(query)
-  const cityLower = city.toLowerCase()
-  const bhkParam = bhk ? `&bedroom=${bhk}` : ''
-
-  return {
-    magicbricks: `https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=${city}&textsearch=${encoded}${bhkParam}`,
-    acres99: `https://www.99acres.com/search/property/buy/${cityLower}?searchQ=${encoded}`,
-    nobroker: `https://www.nobroker.in/property/sale/${cityLower}/?searchParam=${encoded}`,
-    housing: `https://housing.com/in/buy/${cityLower}?q=${encoded}`,
-    maps: `https://www.google.com/maps/search/${encoded}+${encodeURIComponent(city)}`,
-  }
-}
-
-export async function getSearchUrls(params: SearchParams) {
-  const { query, city } = params
-
-  console.log('[orchestrator] Finding portal URLs via Google...')
-  const portalResults = await findAllPortalUrls(query, city)
-  const fallbacks = getFallbackUrls(params)
-
-  // Use Google-found URL if available, fall back to generic search URL
-  return {
-    magicbricks: portalResults.magicbricks?.url || fallbacks.magicbricks,
-    acres99: portalResults.acres99?.url || fallbacks.acres99,
-    nobroker: portalResults.nobroker?.url || fallbacks.nobroker,
-    housing: portalResults.housing?.url || fallbacks.housing,
-    maps: fallbacks.maps,
-  }
-}
-
-export async function runSearch(sessionId: string, params: SearchParams): Promise<void> {
-  console.log(`[orchestrator] Starting: "${params.query}" ${params.city} ${params.bhk || 'any BHK'}`)
-
+export async function runSearchJob(sessionId: string, params: SearchParams) {
   try {
     await sessionStore.updateStatus(sessionId, 'running')
+    console.log(`[orchestrator] Session ${sessionId} started for`, params)
 
-    // Get real portal URLs from Google first
-    const { query, city } = params
-    const portalResults = await findAllPortalUrls(query, city)
+    // PHASE 2: Query Expansion
+    // Run exact match + broad match queries in parallel to increase recall
+    const baseQuery = `${params.query} ${params.city}`
+    const broadQuery = params.query.replace(/[\d\.]+\s*(cr|lacs?|l)/i, '').replace(/\b(?:under|max|near|in)\b/gi, '').trim()
 
-    // Use discovered URLs for scraping, fall back to generic if not found
-    const fallbacks = getFallbackUrls(params)
-    const mbUrl = portalResults.magicbricks?.url || fallbacks.magicbricks
-    const nbUrl = portalResults.nobroker?.url || fallbacks.nobroker
+    // 1. Run Scrapers concurrently 
+    console.log(`[orchestrator] Launching parallel scrapers...`)
 
-    console.log('[orchestrator] MagicBricks URL:', mbUrl)
-    console.log('[orchestrator] NoBroker URL:', nbUrl)
-
-    const scraperJobs = [
-      searchMagicBricks({ ...params, resolvedUrl: mbUrl })
-        .then(async results => {
-          console.log(`[magicbricks] Got ${results.length} results`)
-          if (results.length > 0) await sessionStore.appendResults(sessionId, results)
-        })
-        .catch(err => console.error('[magicbricks] Failed:', err.message)),
-
-      searchNoBroker({ ...params, resolvedUrl: nbUrl })
-        .then(async results => {
-          console.log(`[nobroker] Got ${results.length} results`)
-          if (results.length > 0) await sessionStore.appendResults(sessionId, results)
-        })
-        .catch(err => console.error('[nobroker] Failed:', err.message)),
-
-        search99Acres({ ...params, resolvedUrl: portalResults.acres99?.url || fallbacks.acres99 })
-  .then(async results => {
-    console.log(`[99acres] Got ${results.length} results`)
-    if (results.length > 0) await sessionStore.appendResults(sessionId, results)
-  })
-  .catch(err => console.error('[99acres] Failed:', err.message)),
+    const scraperPromises = [
+      searchMagicBricks({ ...params }),
+      search99Acres({ ...params }),
+      searchNoBroker({ ...params }),
     ]
 
-    await Promise.allSettled(scraperJobs)
-    console.log(`[orchestrator] Done — session: ${sessionId}`)
-    await sessionStore.updateStatus(sessionId, 'complete')
+    if (broadQuery && broadQuery !== params.query) {
+      console.log(`[orchestrator] Launching expansion query: ${broadQuery}`)
+      scraperPromises.push(searchMagicBricks({ query: broadQuery, city: params.city, bhk: 'Any' }))
+      scraperPromises.push(search99Acres({ query: broadQuery, city: params.city, bhk: 'Any' }))
+    }
 
-  } catch (err) {
-    console.error('[orchestrator] Fatal:', err)
-    await sessionStore.setError(sessionId, String(err))
+    const [reviewsResult, ...scraperResults] = await Promise.allSettled([
+      fetchPropertyReviews(params.query, params.city),
+      ...scraperPromises
+    ])
+
+    // Handle extraction
+    let allExtracted: any[] = []
+
+    for (const res of scraperResults) {
+      if (res.status === 'fulfilled' && res.value) {
+        allExtracted = allExtracted.concat(res.value)
+      }
+    }
+
+    console.log(`[orchestrator] Extracted total ${allExtracted.length} unvalidated results`)
+
+    // Pipeline
+    // 1. Validate
+    const validated = allExtracted.map(p => validateProperty(p))
+
+    // 2. Deduplicate into Canonical Format
+    const canonicals = deduplicateListings(validated)
+
+    // 3. Rank Canonical Items
+    const ranked = rankListings(params.query, params.city, canonicals)
+
+    // Append to Session 
+    await sessionStore.appendResults(sessionId, ranked)
+
+    if (reviewsResult.status === 'fulfilled' && reviewsResult.value) {
+      await sessionStore.setReviews(sessionId, reviewsResult.value)
+    }
+
+    await sessionStore.updateStatus(sessionId, 'complete')
+    console.log(`[orchestrator] Session ${sessionId} complete. Saved ${ranked.length} canonical results.`)
+
+  } catch (err: any) {
+    console.error(`[orchestrator] Session ${sessionId} failed:`, err)
+    await sessionStore.setError(sessionId, err.message)
   }
 }

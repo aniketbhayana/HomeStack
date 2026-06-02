@@ -1,12 +1,12 @@
 import { chromium } from 'playwright'
 import { normalizeProperty } from '../normalizer/normalize'
-import { NormalizedProperty } from '../session/sessionStore'
+import { ExtractedProperty } from '../session/sessionStore'
 import { SearchParams } from '../orchestrator/searchOrchestrator'
 
 export async function search99Acres(
   params: SearchParams & { resolvedUrl?: string }
-): Promise<NormalizedProperty[]> {
-  const { query, city, resolvedUrl } = params
+): Promise<ExtractedProperty[]> {
+  const { query, city, bhk } = params
   console.log('[99acres] Launching browser...')
 
   const browser = await chromium.launch({
@@ -21,89 +21,120 @@ export async function search99Acres(
   })
 
   const page = await context.newPage()
-  const results: NormalizedProperty[] = []
+  const results: ExtractedProperty[] = []
 
   try {
-    const url = resolvedUrl || `https://www.99acres.com/search/property/buy/${city.toLowerCase()}?searchQ=${encodeURIComponent(query)}`
-    console.log('[99acres] URL:', url)
+    // Target search results page — individual listing cards link to /detail/ pages
+    const citySlug = city.toLowerCase().replace(/\s+/g, '-')
+    const bedroomParam = bhk && bhk !== 'Any' ? `&bedroom=${bhk}` : ''
+    const url = `https://www.99acres.com/search/property/buy/${citySlug}?searchQ=${encodeURIComponent(query)}${bedroomParam}`
+    console.log('[99acres] Search URL:', url)
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.waitForTimeout(4000)
+    await page.waitForTimeout(5000)
 
-    const data = await page.evaluate(() => {
-      const projectTitle = document.title.split(' -')[0].trim()
-      const configs: Array<{ bhk: string; price: string; area: string; url: string }> = []
+    const listings = await page.evaluate(() => {
+      const results: Array<{ title: string; price: string; bhk: string; area: string; locality: string; url: string }> = []
 
-      // Real selectors from DOM inspection:
-      // configurationCards__configurationCardsSubHeading → "3 BHK Apartment"
-      // configurationCards__cardPriceHeading → "₹ 2.9 Cr"
-      // configurationCards__configBandLabel → "3 BHK"
+      // 99acres search result cards — individual property tiles
+      // Each tile has an anchor linking to /detail/... or a full property URL
+      const cards = Array.from(document.querySelectorAll(
+        '[class*="srpTuple__"], [class*="SrpTuple"], [class*="card__"], [data-tracking-id*="property"]'
+      )).slice(0, 8)
 
-      const cards = Array.from(document.querySelectorAll('[class*="configurationCards__config"]'))
-        .filter(el => !el.className.includes('Heading') && !el.className.includes('Label'))
+      for (const card of cards) {
+        // Find the detail link — 99acres uses /detail/ URLs for individual properties
+        const linkEl = (
+          card.querySelector('a[href*="/detail/"]') ||
+          card.querySelector('a[href*="99acres.com"]') ||
+          card.querySelector('a[href*="/property"]')
+        ) as HTMLAnchorElement | null
 
-      // Try config cards first
-      const priceHeadings = Array.from(document.querySelectorAll('[class*="configurationCards__cardPriceHeading"]'))
-      const bhkHeadings = Array.from(document.querySelectorAll('[class*="configurationCards__configurationCardsSubHeading"]'))
+        if (!linkEl) continue
+        let href = linkEl.href || ''
+        if (href && !href.startsWith('http')) href = `https://www.99acres.com${href}`
+        if (!href || !href.includes('99acres.com')) continue
 
-      const count = Math.min(priceHeadings.length, bhkHeadings.length, 5)
+        // Title
+        const titleEl = card.querySelector(
+          '[class*="title"], [class*="Title"], [class*="heading"], h2, h3'
+        )
+        const title = titleEl?.textContent?.trim() || linkEl.textContent?.trim() || ''
 
-      for (let i = 0; i < count; i++) {
-        const bhkText = bhkHeadings[i]?.textContent?.trim() || ''
-        const priceText = priceHeadings[i]?.textContent?.trim() || ''
-        const bhkMatch = bhkText.match(/(\d)\s*BHK/)
+        // Price
+        const priceEl = card.querySelector(
+          '[class*="price"], [class*="Price"], [class*="amount"]'
+        )
+        const price = priceEl?.textContent?.trim() || ''
 
-        configs.push({
-          bhk: bhkMatch ? bhkMatch[1] : '',
-          price: priceText,
-          area: bhkText.replace(/\d+\s*BHK\s*/, '').trim(),
-          url: window.location.href
-        })
+        // BHK / area — look in summary/info sections
+        let bhk = '', area = ''
+        const infoEls = Array.from(card.querySelectorAll(
+          '[class*="bedroom"], [class*="Bedroom"], [class*="bhk"], [class*="area"], [class*="size"]'
+        ))
+        for (const el of infoEls) {
+          const text = el.textContent?.trim() || ''
+          if (/BHK/i.test(text) && !bhk) bhk = text
+          if (/sq\.?ft|sqft/i.test(text) && !area) area = text
+        }
+
+        // Try combined summary text
+        const summaryEl = card.querySelector('[class*="summary"], [class*="config"]')
+        if (summaryEl && !bhk) {
+          const t = summaryEl.textContent || ''
+          const bm = t.match(/(\d)\s*BHK/)
+          if (bm) bhk = `${bm[1]} BHK`
+          const am = t.match(/([\d,]+)\s*sq\.?ft/i)
+          if (am) area = `${am[1]} sq.ft`
+        }
+
+        // Locality
+        const localityEl = card.querySelector(
+          '[class*="locality"], [class*="location"], [class*="address"]'
+        )
+        const locality = localityEl?.textContent?.trim() || ''
+
+        results.push({ title: title || '99Acres Listing', price, bhk, area, locality, url: href })
       }
 
-      // Fallback: get from main price heading
-      if (configs.length === 0) {
-        const mainPrice = document.querySelector('[class*="configurationCards__configurationCardsHeading"]')
-        const mainBhk = document.querySelector('[class*="configBandLabel"]')
-        if (mainPrice || mainBhk) {
-          configs.push({
-            bhk: mainBhk?.textContent?.trim().match(/(\d)/)?.[1] || '',
-            price: mainPrice?.textContent?.trim() || '',
-            area: '',
-            url: window.location.href
+      // Fallback: collect all /detail/ links on the page
+      if (results.length === 0) {
+        const detailLinks = Array.from(
+          document.querySelectorAll('a[href*="/detail/"]')
+        ) as HTMLAnchorElement[]
+
+        const seen = new Set<string>()
+        for (const link of detailLinks.slice(0, 6)) {
+          let href = link.href
+          if (!href.startsWith('http')) href = `https://www.99acres.com${href}`
+          if (seen.has(href)) continue
+          seen.add(href)
+
+          const parent = link.closest('[class*="card"], [class*="tuple"], li') || link.parentElement
+          const priceEl = parent?.querySelector('[class*="price"]')
+          results.push({
+            title: link.textContent?.trim() || '99Acres Listing',
+            price: priceEl?.textContent?.trim() || '',
+            bhk: '', area: '', locality: '',
+            url: href
           })
         }
       }
 
-      // Get locality from page
-      const localityEl = document.querySelector('[class*="cd__txtPtC"]') 
-        || document.querySelector('[class*="location"]')
-      const locality = localityEl?.textContent?.trim().slice(0, 60) || ''
-
-      return { projectTitle, configs, locality }
+      return results
     })
 
-    console.log(`[99acres] Project: ${data.projectTitle}, Configs: ${data.configs.length}`)
+    console.log(`[99acres] Extracted ${listings.length} listings`)
 
-    for (const config of data.configs) {
+    for (const l of listings) {
       results.push(normalizeProperty({
-        title: `${data.projectTitle}${config.bhk ? ` — ${config.bhk} BHK` : ''}`,
-        price: config.price,
-        area: config.area,
-        locality: data.locality,
+        title: l.title,
+        price: l.price,
+        bhk: l.bhk,
+        area: l.area,
+        locality: l.locality,
         city,
-        url: config.url
-      }, '99acres'))
-    }
-
-    if (results.length === 0) {
-      results.push(normalizeProperty({
-        title: data.projectTitle,
-        price: '',
-        area: '',
-        locality: data.locality,
-        city,
-        url: resolvedUrl || ''
+        url: l.url
       }, '99acres'))
     }
 

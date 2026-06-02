@@ -3,6 +3,7 @@ import Fastify from 'fastify'
 import cors from '@fastify/cors'
 import helmet from '@fastify/helmet'
 import { searchRoutes } from './routes/search'
+import { reviewsRoutes } from './routes/reviews'
 
 const app = Fastify({ logger: true })
 
@@ -20,6 +21,7 @@ app.get('/health', async () => {
 
 // Routes
 app.register(searchRoutes)
+app.register(reviewsRoutes)
 
 // Debug — print all registered routes on startup
 app.ready(() => {

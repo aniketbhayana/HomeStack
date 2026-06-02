@@ -1,12 +1,12 @@
 import { chromium } from 'playwright'
 import { normalizeProperty } from '../normalizer/normalize'
-import { NormalizedProperty } from '../session/sessionStore'
+import { ExtractedProperty } from '../session/sessionStore'
 import { SearchParams } from '../orchestrator/searchOrchestrator'
 
 export async function searchNoBroker(
   params: SearchParams & { resolvedUrl?: string }
-): Promise<NormalizedProperty[]> {
-  const { query, city, resolvedUrl } = params
+): Promise<ExtractedProperty[]> {
+  const { query, city, bhk } = params
   console.log('[nobroker] Launching browser...')
 
   const browser = await chromium.launch({
@@ -20,94 +20,94 @@ export async function searchNoBroker(
   })
 
   const page = await context.newPage()
-  const results: NormalizedProperty[] = []
+  const results: ExtractedProperty[] = []
 
   try {
-    const url = resolvedUrl || `https://www.nobroker.in/property/sale/${city.toLowerCase()}/?searchParam=${encodeURIComponent(query)}`
-    console.log('[nobroker] URL:', url)
+    // Target search results page directly
+    const bedroomParam = bhk && bhk !== 'Any' ? `&bedroom=${bhk}` : ''
+    const url = `https://www.nobroker.in/property/sale/${city.toLowerCase()}/?searchParam=${encodeURIComponent(query)}${bedroomParam}`
+    console.log('[nobroker] Search URL:', url)
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
     await page.waitForTimeout(5000)
 
-    const data = await page.evaluate(() => {
-      const projectTitle = document.title.split(' -')[0].split('|')[0].trim()
+    const listings = await page.evaluate(() => {
+      const results: Array<{ title: string; price: string; bhk: string; area: string; locality: string; url: string }> = []
 
-      const configs: Array<{ bhk: string; price: string; area: string; url: string }> = []
-      const seen = new Set<string>()
+      // NoBroker listing cards
+      const cards = Array.from(document.querySelectorAll(
+        '[class*="bg-white"][class*="rounded-md"][class*="shadow-default"], article, .prop-card'
+      )).slice(0, 8)
 
-      // Real selectors from DOM inspection:
-      // "text-xl font-bold text-[#333333]" → price like "₹85 L"
-      // "text-[#363636] text-base font-semibold" → "3, 4 BHK"
-      // "text-lg font-semibold text-[#363636] w-[70%]" → listing title with BHK
+      for (const card of cards) {
+        // Individual listing links on NoBroker look like:
+        // /property/sale/bangalore/sobha-carnation/some-slug-nb12345
+        const linkEl = card.querySelector('a[href*="/property/sale/"]') as HTMLAnchorElement | null
+        if (!linkEl) continue
 
-      // Individual listings on project page
-      const listingTitles = Array.from(document.querySelectorAll('[class*="text-lg"][class*="font-semibold"][class*="text-[#363636]"]'))
-        .filter(el => el.textContent?.includes('BHK'))
+        let href = linkEl.href || ''
+        if (href && !href.startsWith('http')) href = `https://www.nobroker.in${href}`
 
-      const listingPrices = Array.from(document.querySelectorAll('[class*="text-xl"][class*="font-bold"][class*="text-[#333333]"]'))
+        // Title
+        const titleEl = card.querySelector('h2, [class*="font-semibold"][class*="text-[#363636]"]')
+        const title = titleEl?.textContent?.trim() || linkEl.textContent?.trim() || ''
 
-      const count = Math.min(listingTitles.length, listingPrices.length, 5)
+        // Price — "text-xl font-bold text-[#333333]" or similar
+        const priceEls = Array.from(card.querySelectorAll('[class*="font-bold"], [class*="text-xl"]'))
+        let price = ''
+        for (const p of priceEls) {
+          const t = p.textContent?.trim() || ''
+          if (/₹|Lacs|Cr/i.test(t)) price = t
+        }
 
-      for (let i = 0; i < count; i++) {
-        const titleText = listingTitles[i]?.textContent?.trim() || ''
-        const priceText = listingPrices[i]?.textContent?.trim() || ''
-        const bhkMatch = titleText.match(/(\d)\s*BHK/)
-        const key = `${titleText}-${priceText}`
+        // BHK + Area
+        let bhk = '', area = ''
+        const textNodes = (card as HTMLElement).innerText.split('\n')
+        for (const t of textNodes) {
+          if (/BHK/i.test(t) && !bhk) bhk = t.trim()
+          if (/sq\.?ft/i.test(t) && !area) area = t.trim()
+        }
 
-        if (!seen.has(key)) {
-          seen.add(key)
-          const anchor = listingTitles[i]?.closest('a') as HTMLAnchorElement
-          configs.push({
-            bhk: bhkMatch ? bhkMatch[1] : '',
-            price: priceText,
-            area: '',
-            url: anchor?.href || window.location.href
+        // Locality
+        const localityEl = card.querySelector('[class*="text-[13px]"][class*="text-gray"]')
+        const locality = localityEl?.textContent?.trim() || ''
+
+        if (href && href.includes('nobroker.in')) {
+          results.push({ title: title || 'NoBroker Listing', price, bhk, area, locality, url: href })
+        }
+      }
+
+      // Fallback
+      if (results.length === 0) {
+        const fallbacks = Array.from(document.querySelectorAll('a[href*="/property/sale/"]')) as HTMLAnchorElement[]
+        const seen = new Set()
+        for (const f of fallbacks.slice(0, 6)) {
+          if (seen.has(f.href)) continue
+          seen.add(f.href)
+          let href = f.href
+          if (!href.startsWith('http')) href = `https://www.nobroker.in${href}`
+          results.push({
+            title: f.textContent?.trim() || 'NoBroker Listing',
+            price: '', bhk: '', area: '', locality: '',
+            url: href
           })
         }
       }
 
-      // Fallback: get project-level BHK config
-      if (configs.length === 0) {
-        const projectBhk = document.querySelector('[class*="text-[#363636]"][class*="font-semibold"][class*="w-full"]')
-        const projectPrice = document.querySelector('[class*="text-xl"][class*="font-bold"]')
-
-        if (projectBhk || projectPrice) {
-          configs.push({
-            bhk: projectBhk?.textContent?.trim().match(/(\d)/)?.[1] || '',
-            price: projectPrice?.textContent?.trim() || '',
-            area: '',
-            url: window.location.href
-          })
-        }
-      }
-
-      const locality = document.querySelector('[class*="text-[13px]"][class*="text-gray"]')
-        ?.textContent?.trim() || ''
-
-      return { projectTitle, configs, locality }
+      return results
     })
 
-    console.log(`[nobroker] Project: ${data.projectTitle}, Configs: ${data.configs.length}`)
+    console.log(`[nobroker] Extracted ${listings.length} listings`)
 
-    for (const config of data.configs) {
+    for (const l of listings) {
       results.push(normalizeProperty({
-        title: `${data.projectTitle}${config.bhk ? ` — ${config.bhk} BHK` : ''}`,
-        price: config.price,
-        area: config.area,
-        locality: data.locality,
+        title: l.title,
+        price: l.price,
+        bhk: l.bhk,
+        area: l.area,
+        locality: l.locality,
         city,
-        url: config.url
-      }, 'nobroker'))
-    }
-
-    if (results.length === 0) {
-      results.push(normalizeProperty({
-        title: data.projectTitle,
-        price: '',
-        area: '',
-        locality: data.locality,
-        city,
-        url: resolvedUrl || ''
+        url: l.url
       }, 'nobroker'))
     }
 

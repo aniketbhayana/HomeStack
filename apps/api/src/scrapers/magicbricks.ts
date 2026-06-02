@@ -1,12 +1,12 @@
 import { chromium } from 'playwright'
 import { normalizeProperty } from '../normalizer/normalize'
-import { NormalizedProperty } from '../session/sessionStore'
+import { ExtractedProperty } from '../session/sessionStore'
 import { SearchParams } from '../orchestrator/searchOrchestrator'
 
 export async function searchMagicBricks(
   params: SearchParams & { resolvedUrl?: string }
-): Promise<NormalizedProperty[]> {
-  const { query, city, resolvedUrl } = params
+): Promise<ExtractedProperty[]> {
+  const { query, city, bhk } = params
   console.log('[magicbricks] Launching browser...')
 
   const browser = await chromium.launch({
@@ -21,104 +21,94 @@ export async function searchMagicBricks(
   })
 
   const page = await context.newPage()
-  const results: NormalizedProperty[] = []
+  const results: ExtractedProperty[] = []
 
   try {
-    const url = resolvedUrl || `https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=${city}&textsearch=${encodeURIComponent(query)}`
-    console.log('[magicbricks] URL:', url)
+    // Always use search results page — individual cards link to real /propertyDetails/ URLs
+    const bedroomParam = bhk && bhk !== 'Any' ? `&bedroom=${bhk}` : ''
+    const url = `https://www.magicbricks.com/property-for-sale/residential-real-estate?cityName=${encodeURIComponent(city)}&textsearch=${encodeURIComponent(query)}${bedroomParam}`
+    console.log('[magicbricks] Search URL:', url)
 
     await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.waitForTimeout(4000)
+    await page.waitForTimeout(5000)
 
-    const data = await page.evaluate(() => {
-      // Project page selectors — from real DOM inspection
-      const projectTitle = document.title
-        .replace(' in ', ' — ')
-        .replace(': Price, Brochure, Floor Plan, Reviews', '')
-        .trim()
+    const listings = await page.evaluate(() => {
+      const results: Array<{ title: string; price: string; bhk: string; area: string; locality: string; url: string }> = []
 
-      // Get BHK configs from project page
-      const bhkCards = Array.from(document.querySelectorAll('.pdp__prop__card__bhk'))
-      const configs: Array<{ bhk: string; area: string; price: string; url: string }> = []
+      // MagicBricks search result cards — each card is .mb-srp__card
+      const cards = Array.from(document.querySelectorAll('.mb-srp__card, [class*="mb-srp__card"]')).slice(0, 8)
 
-      bhkCards.forEach((card: Element) => {
-        const text = card.textContent?.trim() || ''
-        // "3 BHK Flat 1300 sq.ft" pattern
-        const bhkMatch = text.match(/(\d)\s*BHK/)
-        const areaMatch = text.match(/([\d,]+)\s*sq\.?ft/i)
+      for (const card of cards) {
+        // Title + detail URL — the card title link goes to /propertyDetails/
+        const titleEl = card.querySelector('.mb-srp__card--title, [class*="mb-srp__card--title"]') as HTMLAnchorElement | null
+        const linkEl = card.querySelector('a[href*="propertyDetails"], a[href*="magicbricks.com"]') as HTMLAnchorElement | null
 
-        // Find price near this card
-        const parent = card.closest('[class*="pdp__prop"]') || card.parentElement
-        const priceEl = parent?.querySelector('.rupees, [class*="price"], [class*="Price"]')
-        const priceText = priceEl?.textContent?.trim() || ''
+        const title = titleEl?.textContent?.trim() || ''
+        let href = linkEl?.href || (titleEl as HTMLAnchorElement)?.href || ''
+        // Ensure absolute URL
+        if (href && !href.startsWith('http')) href = `https://www.magicbricks.com${href}`
 
-        // Find link
-        const anchor = parent?.querySelector('a') as HTMLAnchorElement
-        const href = anchor?.href || window.location.href
+        // Price
+        const priceEl = card.querySelector('.mb-srp__card--price__amount, [class*="card--price"]')
+        const price = priceEl?.textContent?.trim() || ''
 
-        if (bhkMatch) {
-          configs.push({
-            bhk: bhkMatch[1],
-            area: areaMatch ? areaMatch[1].replace(',', '') : '',
-            price: priceText,
-            url: href
-          })
+        // BHK / area from summary list items
+        const summaryItems = Array.from(card.querySelectorAll('.mb-srp__card--summary__list-item, [class*="card--summary"]'))
+        let bhk = ''
+        let area = ''
+        for (const item of summaryItems) {
+          const text = item.textContent?.trim() || ''
+          if (/BHK/i.test(text)) bhk = text
+          if (/sq\.?ft|sqft/i.test(text)) area = text
         }
-      })
 
-      // Fallback: extract from page title + overview section
-      if (configs.length === 0) {
-        const overviewBhk = document.querySelector('.pdp__prop--bhk')
-        const bhkText = overviewBhk?.textContent?.trim() || ''
-        const bhkMatch = bhkText.match(/(\d)\s*BHK/)
+        // Locality
+        const localityEl = card.querySelector('.mb-srp__card--locality, [class*="card--locality"], [class*="location"]')
+        const locality = localityEl?.textContent?.trim() || ''
 
-        // Get price from overview
-        const priceEls = Array.from(document.querySelectorAll('.rupees'))
-        const prices = priceEls
-          .map(el => el.parentElement?.textContent?.trim() || '')
-          .filter(t => t.includes('Cr') || t.includes('L'))
-          .slice(0, 3)
-
-        if (bhkMatch || prices.length > 0) {
-          configs.push({
-            bhk: bhkMatch ? bhkMatch[1] : '',
-            area: '',
-            price: prices[0] || '',
-            url: window.location.href
-          })
+        if (title && href && href.includes('magicbricks.com')) {
+          results.push({ title, price, bhk, area, locality, url: href })
         }
       }
 
-      return {
-        projectTitle,
-        locality: document.querySelector('[class*="pdp__loc"]')?.textContent?.trim() || '',
-        configs: configs.slice(0, 5)
+      // Fallback: find any propertyDetails links on the page
+      if (results.length === 0) {
+        const detailLinks = Array.from(
+          document.querySelectorAll('a[href*="propertyDetails"]')
+        ) as HTMLAnchorElement[]
+
+        for (const link of detailLinks.slice(0, 6)) {
+          const parent = link.closest('[class*="card"], [class*="listing"], li, article') || link.parentElement
+          const priceEl = parent?.querySelector('[class*="price"], [class*="Price"]')
+          const title = link.textContent?.trim() || parent?.querySelector('[class*="title"]')?.textContent?.trim() || ''
+          let href = link.href
+          if (!href.startsWith('http')) href = `https://www.magicbricks.com${href}`
+
+          if (href.includes('propertyDetails')) {
+            results.push({
+              title: title || 'MagicBricks Listing',
+              price: priceEl?.textContent?.trim() || '',
+              bhk: '', area: '', locality: '',
+              url: href
+            })
+          }
+        }
       }
+
+      return results
     })
 
-    console.log(`[magicbricks] Project: ${data.projectTitle}, Configs: ${data.configs.length}`)
+    console.log(`[magicbricks] Extracted ${listings.length} listings`)
 
-    // Create one result per BHK configuration
-    if (data.configs.length > 0) {
-      for (const config of data.configs) {
-        results.push(normalizeProperty({
-          title: `${data.projectTitle}${config.bhk ? ` — ${config.bhk} BHK` : ''}`,
-          price: config.price,
-          area: config.area ? `${config.area} sqft` : '',
-          locality: data.locality,
-          city,
-          url: config.url || resolvedUrl || ''
-        }, 'magicbricks'))
-      }
-    } else {
-      // At minimum return the project itself
+    for (const l of listings) {
       results.push(normalizeProperty({
-        title: data.projectTitle,
-        price: '',
-        area: '',
-        locality: data.locality,
+        title: l.title,
+        price: l.price,
+        bhk: l.bhk,
+        area: l.area,
+        locality: l.locality,
         city,
-        url: resolvedUrl || ''
+        url: l.url
       }, 'magicbricks'))
     }
 
