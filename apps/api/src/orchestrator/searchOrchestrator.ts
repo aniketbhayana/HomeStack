@@ -6,11 +6,12 @@ import { fetchPropertyReviews } from '../scrapers/reviews'
 import { validateProperty } from '../normalizer/validate'
 import { deduplicateListings } from '../normalizer/dedupe'
 import { rankListings } from '../normalizer/rank'
-
+import { findAllPortalUrls } from '../services/googleSearch'
 export interface SearchParams {
   query: string
   city: string
-  bhk: string
+  bhk?: string
+  intent?: 'buy' | 'rent'
 }
 
 export async function runSearchJob(sessionId: string, params: SearchParams) {
@@ -69,13 +70,39 @@ export async function runSearchJob(sessionId: string, params: SearchParams) {
 
     if (reviewsResult.status === 'fulfilled' && reviewsResult.value) {
       await sessionStore.setReviews(sessionId, reviewsResult.value)
+       console.log('[reviews] saved to session')
     }
-
+    
     await sessionStore.updateStatus(sessionId, 'complete')
     console.log(`[orchestrator] Session ${sessionId} complete. Saved ${ranked.length} canonical results.`)
 
   } catch (err: any) {
     console.error(`[orchestrator] Session ${sessionId} failed:`, err)
     await sessionStore.setError(sessionId, err.message)
+  }
+}
+
+// Aliases for backward-compat with search.ts route
+export const runSearch = runSearchJob
+
+/**
+ * Returns direct portal search URLs for immediate display on the frontend.
+ * Called before scrapers run so user can open tabs immediately.
+ */
+
+export async function getSearchUrls(
+  params: SearchParams
+): Promise<Record<string, string>> {
+
+  const results = await findAllPortalUrls(
+    params.query,
+    params.city
+  )
+
+  return {
+    magicbricks: results.magicbricks?.url || '',
+    acres99: results.acres99?.url || '',
+    nobroker: results.nobroker?.url || '',
+    maps: `https://www.google.com/maps/search/${encodeURIComponent(`${params.query} ${params.city}`)}`,
   }
 }

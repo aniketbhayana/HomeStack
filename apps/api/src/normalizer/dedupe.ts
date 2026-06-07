@@ -1,4 +1,4 @@
-import { ExtractedProperty, NormalizedProperty, PropertySource } from '../session/sessionStore'
+import { ExtractedProperty, NormalizedProperty } from '../session/sessionStore'
 
 // Simple string similarity (Jaccard-like approach)
 export function calculateStringSimilarity(str1: string, str2: string): number {
@@ -40,111 +40,30 @@ export function deduplicateListings(extracted: ExtractedProperty[]): NormalizedP
     const valids = extracted.filter(e => e.validationStatus !== 'rejected')
 
     const canonicals: NormalizedProperty[] = []
+    const seenUrls = new Set<string>()
 
     for (const prop of valids) {
-        let matched = false
+        if (!prop.url || seenUrls.has(prop.url)) continue
+        seenUrls.add(prop.url)
 
-        // Attempt to merge with an existing canonical property
-        for (const c of canonicals) {
-            if (isMatch(c, prop)) {
-                mergeIntoCanonical(c, prop)
-                matched = true
-                break
-            }
-        }
+        const bhkMatch = prop.bhk.match(/(\d+)/)
+        const bhkNum = bhkMatch ? parseInt(bhkMatch[1], 10) : null
 
-        // If no match, create a new canonical property
-        if (!matched) {
-            canonicals.push(createCanonical(prop))
-        }
-    }
-
-    // Set best prices for each canonical property
-    for (const c of canonicals) {
-        let minPrice: number | null = null
-        let bestDisplay = 'Price on Request'
-        for (const s of c.sources) {
-            if (s.price !== null && (minPrice === null || s.price < minPrice)) {
-                minPrice = s.price
-                bestDisplay = s.priceDisplay
-            }
-        }
-        c.bestPrice = minPrice
-        c.bestPriceDisplay = bestDisplay
+        canonicals.push({
+            id: prop.id,
+            source: prop.source,
+            title: prop.title,
+            price: prop.price,
+            priceDisplay: prop.priceDisplay,
+            bhk: bhkNum,
+            areaSqft: prop.areaSqft,
+            locality: prop.locality,
+            city: prop.city,
+            url: prop.url,
+            urlType: prop.urlType,
+            amenities: []
+        })
     }
 
     return canonicals
-}
-
-function isMatch(canonical: NormalizedProperty, prop: ExtractedProperty): boolean {
-    // 1. Must be same BHK
-    if (canonical.bhk !== prop.bhk) return false
-
-    // 2. Must be highly similar title OR locality
-    const titleSim = calculateStringSimilarity(canonical.title, prop.title)
-    const locSim = calculateStringSimilarity(canonical.locality, prop.locality)
-    if (titleSim < 0.6 && locSim < 0.6) return false
-
-    // 3. Price delta must be within 6% (or one is completely missing price)
-    if (canonical.bestPrice !== null && prop.price !== null) {
-        const delta = Math.abs(canonical.bestPrice - prop.price)
-        const pct = delta / canonical.bestPrice
-        if (pct > 0.06) return false
-    }
-
-    return true
-}
-
-function createCanonical(prop: ExtractedProperty): NormalizedProperty {
-    const sourceObj: PropertySource = {
-        platform: prop.source,
-        url: prop.url,
-        urlType: prop.urlType,
-        price: prop.price,
-        priceDisplay: prop.priceDisplay
-    }
-
-    return {
-        id: `C-${prop.id}`,
-        title: prop.title,
-        locality: prop.locality,
-        city: prop.city,
-        bhk: prop.bhk,
-        areaSqft: prop.areaSqft,
-        areaDisplay: prop.areaDisplay,
-        sources: [sourceObj],
-        bestPrice: prop.price,
-        bestPriceDisplay: prop.priceDisplay,
-        relevanceScore: 0,
-        createdAt: prop.createdAt,
-        updatedAt: new Date().toISOString()
-    }
-}
-
-function mergeIntoCanonical(canonical: NormalizedProperty, prop: ExtractedProperty) {
-    // if this platform is already tracked (e.g. 2 magicbricks links mapped to same property), skip or keep the better urlType
-    const existingSourceIdx = canonical.sources.findIndex(s => s.platform === prop.source)
-
-    const sourceObj: PropertySource = {
-        platform: prop.source,
-        url: prop.url,
-        urlType: prop.urlType,
-        price: prop.price,
-        priceDisplay: prop.priceDisplay
-    }
-
-    if (existingSourceIdx >= 0) {
-        // If the new one is a listing but old is project, swap them
-        if (prop.urlType === 'listing' && canonical.sources[existingSourceIdx].urlType !== 'listing') {
-            canonical.sources[existingSourceIdx] = sourceObj
-        }
-    } else {
-        canonical.sources.push(sourceObj)
-    }
-
-    // Update canonical metadata if new one has better info
-    if (!canonical.areaSqft && prop.areaSqft) {
-        canonical.areaSqft = prop.areaSqft
-        canonical.areaDisplay = prop.areaDisplay
-    }
 }

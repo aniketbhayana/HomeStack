@@ -12,25 +12,34 @@ interface Property {
   locality: string
   city: string
   url: string
-  urlType: 'listing' | 'project' | 'search'
+
+  urlType?: 'listing' | 'project' | 'search' | 'ad'
+}
+
+interface ReviewMetric {
+  label: string
+  mentions: number
+  type: 'pro' | 'con'
 }
 
 interface PropertyReviews {
-  placeId?: string
+  projectName: string
   rating: number | null
   reviewCount: number | null
-  pros: string[]
-  cons: string[]
-  summary: string
   reviewsUrl: string
+
+  pros: ReviewMetric[]
+  cons: ReviewMetric[]
 }
 
 interface Session {
   sessionId: string
   status: 'pending' | 'running' | 'complete' | 'error'
   results: Property[]
-  reviews?: PropertyReviews
   query: string
+
+  reviews?: PropertyReviews
+
   error?: string
 }
 
@@ -38,183 +47,35 @@ interface SearchUrls {
   magicbricks: string
   acres99: string
   nobroker: string
+  housing: string
   maps: string
 }
 
 const SOURCE_CONFIG: Record<string, { label: string; color: string; dot: string }> = {
   magicbricks: { label: 'MagicBricks', color: '#b91c1c', dot: '#ef4444' },
-  '99acres': { label: '99Acres', color: '#92400e', dot: '#f59e0b' },
-  nobroker: { label: 'NoBroker', color: '#065f46', dot: '#10b981' },
+  '99acres':   { label: '99Acres',     color: '#92400e', dot: '#f59e0b' },
+  nobroker:    { label: 'NoBroker',    color: '#065f46', dot: '#10b981' },
+  housing:     { label: 'Housing.com', color: '#1e3a5f', dot: '#3b82f6' },
 }
-
-const URL_TYPE_CONFIG: Record<string, { label: string; color: string; bg: string; border: string }> = {
-  listing: { label: 'Direct Listing', color: '#065f46', bg: '#ecfdf5', border: '#6ee7b7' },
-  project: { label: 'Project Page', color: '#92400e', bg: '#fffbeb', border: '#fcd34d' },
-  search: { label: 'Search Results', color: '#6b7280', bg: '#f9fafb', border: '#e5e7eb' },
-}
-
-const ALL_SOURCES = ['magicbricks', '99acres', 'nobroker']
 
 const CITIES = ['Bangalore', 'Mumbai', 'Delhi', 'Hyderabad', 'Pune', 'Chennai']
 const BHK_OPTIONS = ['Any', '1', '2', '3', '4', '4+']
 
 const PORTAL_LIST = [
   { key: 'magicbricks', label: 'MagicBricks', urlKey: 'magicbricks' },
-  { key: 'acres99', label: '99Acres', urlKey: 'acres99' },
-  { key: 'nobroker', label: 'NoBroker', urlKey: 'nobroker' },
-  { key: 'maps', label: 'Google Maps', urlKey: 'maps' },
+  { key: 'acres99',     label: '99Acres',     urlKey: 'acres99' },
+  { key: 'nobroker',    label: 'NoBroker',    urlKey: 'nobroker' },
+  { key: 'maps',        label: 'Google Maps', urlKey: 'maps' },
 ]
 
-function StarRating({ rating }: { rating: number }) {
-  const full = Math.floor(rating)
-  const half = rating - full >= 0.4
-  const empty = 5 - full - (half ? 1 : 0)
-  return (
-    <span style={{ color: '#f59e0b', fontSize: 15, letterSpacing: 1 }}>
-      {'★'.repeat(full)}
-      {half ? '½' : ''}
-      {'☆'.repeat(empty)}
-    </span>
-  )
-}
-
-/** Properties-available comparison table derived from session.results */
-function PropertiesTable({ results }: { results: Property[] }) {
-  // Build per-source best price (highest confidence = listing first)
-  const bySource: Record<string, Property[]> = {}
-  for (const p of results) {
-    if (!bySource[p.source]) bySource[p.source] = []
-    bySource[p.source].push(p)
-  }
-
-  return (
-    <div className="hs-props-table-wrap">
-      <div className="hs-section-eyebrow">Properties available</div>
-      <table className="hs-props-table">
-        <thead>
-          <tr>
-            <th>Platform</th>
-            <th>Found</th>
-            <th>Best Price</th>
-            <th>URL Type</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {ALL_SOURCES.map(source => {
-            const src = SOURCE_CONFIG[source]
-            const listings = bySource[source] || []
-            // prefer listing-type, then project, then search
-            const rank = { listing: 0, project: 1, search: 2 }
-            const sorted = [...listings].sort((a, b) =>
-              (rank[a.urlType] ?? 2) - (rank[b.urlType] ?? 2)
-            )
-            const best = sorted[0] || null
-            const urlCfg = best ? URL_TYPE_CONFIG[best.urlType] : null
-
-            return (
-              <tr key={source} className={best ? '' : 'hs-props-row-absent'}>
-                <td>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7 }}>
-                    <span style={{ width: 7, height: 7, borderRadius: '50%', background: src.dot, display: 'inline-block' }} />
-                    <span style={{ color: src.color, fontSize: 12, fontWeight: 500, letterSpacing: '0.04em' }}>{src.label}</span>
-                  </span>
-                </td>
-                <td>{best ? <span className="hs-tick">✓</span> : <span className="hs-cross">—</span>}</td>
-                <td style={{ fontFamily: "'Cormorant Garamond', serif", fontSize: 17, fontWeight: 400 }}>
-                  {best?.priceDisplay || '—'}
-                </td>
-                <td>
-                  {urlCfg && (
-                    <span className="hs-url-badge" style={{ color: urlCfg.color, background: urlCfg.bg, borderColor: urlCfg.border }}>
-                      {urlCfg.label}
-                    </span>
-                  )}
-                </td>
-                <td>
-                  {best && (
-                    <a href={best.url} target="_blank" rel="noopener noreferrer" className="hs-table-view-btn">
-                      View →
-                    </a>
-                  )}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-/** Reviews panel */
-function ReviewsPanel({ reviews }: { reviews: PropertyReviews }) {
-  const [open, setOpen] = useState(true)
-
-  return (
-    <div className="hs-reviews-panel">
-      <button className="hs-reviews-toggle" onClick={() => setOpen(o => !o)}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span className="hs-section-eyebrow" style={{ marginBottom: 0 }}>Google Reviews Summary</span>
-          {reviews.rating && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-              <StarRating rating={reviews.rating} />
-              <span style={{ fontSize: 13, color: '#3a3a3a', fontWeight: 500 }}>{reviews.rating}</span>
-              {reviews.reviewCount && (
-                <span style={{ fontSize: 12, color: '#888' }}>({reviews.reviewCount.toLocaleString()} reviews)</span>
-              )}
-            </span>
-          )}
-        </div>
-        <span style={{ color: '#888', fontSize: 13 }}>{open ? '▲' : '▼'}</span>
-      </button>
-
-      {open && (
-        <div className="hs-reviews-body">
-          <p className="hs-reviews-summary">{reviews.summary}</p>
-
-          {(reviews.pros.length > 0 || reviews.cons.length > 0) && (
-            <div className="hs-reviews-chips-row">
-              {reviews.pros.length > 0 && (
-                <div className="hs-chips-group">
-                  <span className="hs-chips-label hs-chips-label--pro">Pros</span>
-                  <div className="hs-chips">
-                    {reviews.pros.map(p => (
-                      <span key={p} className="hs-chip hs-chip--pro">{p}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-              {reviews.cons.length > 0 && (
-                <div className="hs-chips-group">
-                  <span className="hs-chips-label hs-chips-label--con">Cons</span>
-                  <div className="hs-chips">
-                    {reviews.cons.map(c => (
-                      <span key={c} className="hs-chip hs-chip--con">{c}</span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-
-          <a href={reviews.reviewsUrl} target="_blank" rel="noopener noreferrer" className="hs-reviews-link">
-            View on Google Maps →
-          </a>
-        </div>
-      )}
-    </div>
-  )
-}
-
 export default function Home() {
-  const [query, setQuery] = useState('')
-  const [city, setCity] = useState('Bangalore')
-  const [bhk, setBhk] = useState('Any')
-  const [session, setSession] = useState<Session | null>(null)
+  const [query, setQuery]         = useState('')
+  const [city, setCity]           = useState('Bangalore')
+  const [bhk, setBhk]             = useState('Any')
+  const [session, setSession]     = useState<Session | null>(null)
   const [searchUrls, setSearchUrls] = useState<SearchUrls | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [searched, setSearched] = useState(false)
+  const [loading, setLoading]     = useState(false)
+  const [searched, setSearched]   = useState(false)
   const pollRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
@@ -224,7 +85,7 @@ export default function Home() {
   const pollForResults = (sessionId: string) => {
     const poll = async () => {
       try {
-        const res = await fetch(`http://localhost:3001/v1/search/${sessionId}`)
+        const res  = await fetch(`http://localhost:3001/v1/search/${sessionId}`)
         const data: Session = await res.json()
         setSession(data)
         if (data.status === 'running' || data.status === 'pending') {
@@ -265,7 +126,7 @@ export default function Home() {
           data.searchUrls.acres99,
           data.searchUrls.nobroker,
           data.searchUrls.maps,
-        ].filter(Boolean)
+        ]
         urls.forEach(url => window.open(url, '_blank', 'noopener,noreferrer'))
       }
 
@@ -320,7 +181,9 @@ export default function Home() {
           letter-spacing: 0.04em;
           color: var(--ink);
         }
-        .hs-logo span { color: var(--accent); }
+        .hs-logo span {
+          color: var(--accent);
+        }
         .hs-tagline {
           font-size: 12px;
           letter-spacing: 0.12em;
@@ -351,7 +214,10 @@ export default function Home() {
           margin-bottom: 20px;
           letter-spacing: -0.01em;
         }
-        .hs-hero-title em { font-style: italic; color: var(--accent); }
+        .hs-hero-title em {
+          font-style: italic;
+          color: var(--accent);
+        }
         .hs-hero-sub {
           font-size: 15px;
           color: var(--ink-mid);
@@ -402,8 +268,16 @@ export default function Home() {
         .hs-search-btn:hover  { background: var(--accent); }
         .hs-search-btn:disabled { background: var(--ink-soft); cursor: not-allowed; }
 
-        .hs-filters { display: flex; align-items: center; gap: 32px; }
-        .hs-filter-group { display: flex; align-items: center; gap: 10px; }
+        .hs-filters {
+          display: flex;
+          align-items: center;
+          gap: 32px;
+        }
+        .hs-filter-group {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
         .hs-filter-label {
           font-size: 11px;
           letter-spacing: 0.12em;
@@ -427,7 +301,10 @@ export default function Home() {
           background-repeat: no-repeat;
           background-position: right 4px center;
         }
-        .hs-bhk-pills { display: flex; gap: 6px; }
+        .hs-bhk-pills {
+          display: flex;
+          gap: 6px;
+        }
         .hs-bhk-pill {
           padding: 5px 13px;
           font-family: 'DM Sans', sans-serif;
@@ -465,7 +342,11 @@ export default function Home() {
           white-space: nowrap;
           flex-shrink: 0;
         }
-        .hs-portal-links { display: flex; gap: 8px; flex-wrap: wrap; }
+        .hs-portal-links {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
         .hs-portal-link {
           display: inline-flex;
           align-items: center;
@@ -480,16 +361,22 @@ export default function Home() {
           transition: all 0.15s;
           letter-spacing: 0.02em;
         }
-        .hs-portal-link:hover { border-color: var(--ink); color: var(--ink); }
+        .hs-portal-link:hover {
+          border-color: var(--ink);
+          color: var(--ink);
+        }
         .hs-portal-dot {
-          width: 6px; height: 6px;
+          width: 6px;
+          height: 6px;
           border-radius: 50%;
           background: var(--ink-soft);
           flex-shrink: 0;
         }
 
         /* ── Results ── */
-        .hs-results { padding: 0 48px 80px; }
+        .hs-results {
+          padding: 0 48px 80px;
+        }
         .hs-results-header {
           display: flex;
           align-items: baseline;
@@ -522,135 +409,9 @@ export default function Home() {
         .hs-status-badge.complete { color: #065f46; }
         .hs-status-badge.error    { color: #b91c1c; }
 
-        /* ── Section eyebrow ── */
-        .hs-section-eyebrow {
-          font-size: 10px;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          color: var(--ink-soft);
-          margin-bottom: 16px;
-          font-weight: 400;
-        }
-
-        /* ── Reviews Panel ── */
-        .hs-reviews-panel {
-          border: 1px solid var(--rule);
-          background: var(--white);
-          margin-bottom: 40px;
-          border-radius: 2px;
-          overflow: hidden;
-        }
-        .hs-reviews-toggle {
-          width: 100%;
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          padding: 18px 24px;
-          background: none;
-          border: none;
-          cursor: pointer;
-          gap: 16px;
-          border-bottom: 1px solid transparent;
-          transition: border-color 0.15s;
-        }
-        .hs-reviews-toggle:hover { border-bottom-color: var(--rule); background: var(--paper); }
-        .hs-reviews-body {
-          padding: 20px 24px 24px;
-          border-top: 1px solid var(--rule);
-        }
-        .hs-reviews-summary {
-          font-size: 14px;
-          color: var(--ink-mid);
-          font-weight: 300;
-          line-height: 1.65;
-          margin-bottom: 20px;
-          font-style: italic;
-        }
-        .hs-reviews-chips-row {
-          display: flex;
-          gap: 32px;
-          flex-wrap: wrap;
-          margin-bottom: 20px;
-        }
-        .hs-chips-group { display: flex; flex-direction: column; gap: 8px; }
-        .hs-chips-label {
-          font-size: 10px;
-          letter-spacing: 0.16em;
-          text-transform: uppercase;
-          font-weight: 500;
-        }
-        .hs-chips-label--pro { color: #065f46; }
-        .hs-chips-label--con { color: #b91c1c; }
-        .hs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
-        .hs-chip {
-          padding: 4px 12px;
-          font-size: 12px;
-          border-radius: 100px;
-          font-weight: 400;
-          letter-spacing: 0.02em;
-        }
-        .hs-chip--pro { background: #ecfdf5; color: #065f46; border: 1px solid #6ee7b7; }
-        .hs-chip--con { background: #fef2f2; color: #b91c1c; border: 1px solid #fca5a5; }
-        .hs-reviews-link {
-          font-size: 12px;
-          color: var(--accent);
-          text-decoration: none;
-          letter-spacing: 0.06em;
-          font-weight: 400;
-        }
-        .hs-reviews-link:hover { color: var(--ink); }
-
-        /* ── Properties Available Table ── */
-        .hs-props-table-wrap {
-          margin-bottom: 48px;
-        }
-        .hs-props-table {
-          width: 100%;
-          border-collapse: collapse;
-          font-size: 13px;
-        }
-        .hs-props-table th {
-          font-size: 10px;
-          letter-spacing: 0.14em;
-          text-transform: uppercase;
-          color: var(--ink-soft);
-          font-weight: 400;
-          padding: 0 0 12px;
-          text-align: left;
-          border-bottom: 1px solid var(--rule);
-        }
-        .hs-props-table td {
-          padding: 14px 0;
-          border-bottom: 1px solid var(--rule);
-          vertical-align: middle;
-        }
-        .hs-props-row-absent td { opacity: 0.4; }
-        .hs-tick { color: #10b981; font-size: 15px; font-weight: 600; }
-        .hs-cross { color: var(--ink-soft); }
-        .hs-url-badge {
-          display: inline-block;
-          padding: 3px 10px;
-          font-size: 11px;
-          border-radius: 100px;
-          border: 1px solid;
-          font-weight: 400;
-          letter-spacing: 0.03em;
-        }
-        .hs-table-view-btn {
-          font-size: 12px;
-          color: var(--accent);
-          text-decoration: none;
-          letter-spacing: 0.06em;
-          font-weight: 400;
-          white-space: nowrap;
-        }
-        .hs-table-view-btn:hover { color: var(--ink); }
-
         /* ── Cards ── */
         .hs-cards { display: flex; flex-direction: column; gap: 0; }
-        .hs-cards-header {
-          margin-bottom: 20px;
-        }
+
         .hs-card {
           display: grid;
           grid-template-columns: 1fr auto;
@@ -669,25 +430,19 @@ export default function Home() {
         .hs-card-source {
           display: inline-flex;
           align-items: center;
-          gap: 8px;
+          gap: 6px;
           margin-bottom: 10px;
         }
-        .hs-card-source-dot { width: 5px; height: 5px; border-radius: 50%; }
+        .hs-card-source-dot {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+        }
         .hs-card-source-name {
           font-size: 10px;
           letter-spacing: 0.16em;
           text-transform: uppercase;
           font-weight: 400;
-        }
-        .hs-card-url-badge {
-          display: inline-block;
-          padding: 2px 9px;
-          font-size: 10px;
-          border-radius: 100px;
-          border: 1px solid;
-          font-weight: 400;
-          letter-spacing: 0.03em;
-          vertical-align: middle;
         }
 
         .hs-card-title {
@@ -704,16 +459,25 @@ export default function Home() {
           font-weight: 300;
           margin-bottom: 14px;
         }
-        .hs-card-meta { display: flex; gap: 24px; }
+        .hs-card-meta {
+          display: flex;
+          gap: 24px;
+        }
         .hs-card-meta-item {
           font-size: 12px;
           color: var(--ink-mid);
           font-weight: 300;
           letter-spacing: 0.02em;
         }
-        .hs-card-meta-item strong { font-weight: 500; color: var(--ink); }
+        .hs-card-meta-item strong {
+          font-weight: 500;
+          color: var(--ink);
+        }
 
-        .hs-card-price { text-align: right; flex-shrink: 0; }
+        .hs-card-price {
+          text-align: right;
+          flex-shrink: 0;
+        }
         .hs-card-price-main {
           font-family: 'Cormorant Garamond', serif;
           font-size: 26px;
@@ -733,7 +497,10 @@ export default function Home() {
           gap: 6px;
           justify-content: flex-end;
         }
-        .hs-card-cta::after { content: '→'; font-size: 12px; }
+        .hs-card-cta::after {
+          content: '→';
+          font-size: 12px;
+        }
 
         /* ── Shimmer ── */
         .hs-shimmer { display: flex; flex-direction: column; gap: 0; }
@@ -754,7 +521,10 @@ export default function Home() {
         @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
         /* ── Empty ── */
-        .hs-empty { padding: 64px 0; text-align: center; }
+        .hs-empty {
+          padding: 64px 0;
+          text-align: center;
+        }
         .hs-empty-title {
           font-family: 'Cormorant Garamond', serif;
           font-size: 28px;
@@ -783,7 +553,6 @@ export default function Home() {
           .hs-hero { padding-top: 40px; }
           .hs-card:hover { margin: 0; padding-left: 0; padding-right: 0; }
           .hs-filters { flex-wrap: wrap; gap: 16px; }
-          .hs-reviews-chips-row { flex-direction: column; gap: 20px; }
         }
       `}</style>
 
@@ -804,7 +573,7 @@ export default function Home() {
               <em>without the noise.</em>
             </h1>
             <p className="hs-hero-sub">
-              Search once. We surface listings from MagicBricks, 99Acres, and NoBroker side by side — with Google Reviews, pros, cons, and cross-platform pricing.
+              Search once. We surface listings from MagicBricks, 99Acres, NoBroker and Housing.com side by side, instantly.
             </p>
           </section>
         )}
@@ -890,8 +659,97 @@ export default function Home() {
           <>
             <hr className="hs-divider" />
             <section className="hs-results" style={{ paddingTop: '40px' }}>
+              {session.reviews && (
+        <div
+          style={{
+            marginBottom: '32px',
+            padding: '24px',
+            border: '1px solid #e2ddd6',
+            background: '#ffffff'
+          }}
+        >
+          <h3
+            style={{
+              fontFamily: 'Cormorant Garamond, serif',
+              fontSize: '28px',
+              marginBottom: '12px'
+            }}
+          >
+            Community Reviews
+          </h3>
 
-              {/* Status header */}
+          <p
+            style={{
+              marginBottom: '20px',
+              color: '#555'
+            }}
+          >
+            ⭐ {session.reviews.rating ?? 'N/A'}
+            {' · '}
+            {session.reviews.reviewCount ?? 0} reviews
+          </p>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: '1fr 1fr',
+              gap: '24px'
+            }}
+          >
+            <div>
+              <h4
+                style={{
+                  marginBottom: '10px',
+                  color: '#065f46'
+                }}
+              >
+                Pros
+              </h4>
+
+              <ul>
+                {session.reviews.pros.map((pro, idx) => (
+                  <li key={idx}>
+                    {pro.label} ({pro.mentions})
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <h4
+                style={{
+                  marginBottom: '10px',
+                  color: '#b91c1c'
+                }}
+              >
+                Cons
+              </h4>
+
+              <ul>
+                {session.reviews.cons.map((con, idx) => (
+                  <li key={idx}>
+                    {con.label} ({con.mentions})
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+
+          <a
+            href={session.reviews.reviewsUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{
+              display: 'inline-block',
+              marginTop: '20px',
+              color: '#8b6c42',
+              textDecoration: 'none'
+            }}
+          >
+            View Google Reviews →
+          </a>
+        </div>
+      )}
               <div className="hs-results-header">
                 <div className="hs-results-count">
                   {session.status === 'complete'
@@ -904,7 +762,7 @@ export default function Home() {
                 </span>
               </div>
 
-              {/* Shimmer while loading */}
+              {/* Shimmer */}
               {(session.status === 'pending' || session.status === 'running') && (
                 <div className="hs-shimmer">
                   {[1, 2, 3].map(i => (
@@ -920,78 +778,63 @@ export default function Home() {
                 </div>
               )}
 
-              {/* ── Reviews Panel ── */}
-              {session.status === 'complete' && session.reviews && (
-                <ReviewsPanel reviews={session.reviews} />
-              )}
-
-              {/* ── Properties Available Table ── */}
-              {session.status === 'complete' && session.results.length > 0 && (
-                <PropertiesTable results={session.results} />
-              )}
-
-              {/* ── Listing Cards ── */}
+              {/* Cards */}
               {session.results.length > 0 && (
-                <>
-                  <div className="hs-cards-header">
-                    <div className="hs-section-eyebrow">All listings</div>
-                  </div>
-                  <div className="hs-cards">
-                    {session.results.map(property => {
-                      const src = SOURCE_CONFIG[property.source] || { label: property.source, color: '#888', dot: '#888' }
-                      const urlCfg = URL_TYPE_CONFIG[property.urlType] || URL_TYPE_CONFIG.search
-                      return (
-                        <a
-                          key={property.id}
-                          href={property.url || '#'}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="hs-card"
-                        >
-                          <div>
-                            <div className="hs-card-source">
-                              <span className="hs-card-source-dot" style={{ background: src.dot }} />
-                              <span className="hs-card-source-name" style={{ color: src.color }}>{src.label}</span>
-                              <span
-                                className="hs-card-url-badge"
-                                style={{ color: urlCfg.color, background: urlCfg.bg, borderColor: urlCfg.border }}
-                              >
-                                {urlCfg.label}
-                              </span>
+                <div className="hs-cards">
+                  {session.results.map(property => {
+                    console.log(
+  property.title,
+  property.urlType,
+  property.url
+)
+                    const src = SOURCE_CONFIG[property.source] || { label: property.source, color: '#888', dot: '#888' }
+                    return (
+                      <a
+                        key={property.id}
+                        href={property.url || '#'}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="hs-card"
+                      >
+                        <div>
+                          <div className="hs-card-source">
+                            <span className="hs-card-source-dot" style={{ background: src.dot }} />
+                            <span className="hs-card-source-name" style={{ color: src.color }}>{src.label}</span>
+                          </div>
+                          <div className="hs-card-title">{property.title}</div>
+                          {(property.locality || property.city) && (
+                            <div className="hs-card-locality">
+                              {property.locality}{property.locality && property.city ? ', ' : ''}{property.city}
                             </div>
-                            <div className="hs-card-title">{property.title}</div>
-                            {(property.locality || property.city) && (
-                              <div className="hs-card-locality">
-                                {property.locality}{property.locality && property.city ? ', ' : ''}{property.city}
+                          )}
+                          <div className="hs-card-meta">
+                            {property.bhk && (
+                              <div className="hs-card-meta-item">
+                                <strong>{property.bhk}</strong> BHK
                               </div>
                             )}
-                            <div className="hs-card-meta">
-                              {property.bhk && (
-                                <div className="hs-card-meta-item">
-                                  <strong>{property.bhk}</strong> BHK
-                                </div>
-                              )}
-                              {property.areaSqft && (
-                                <div className="hs-card-meta-item">
-                                  <strong>{property.areaSqft.toLocaleString()}</strong> sq.ft
-                                </div>
-                              )}
-                            </div>
+                            {property.areaSqft && (
+                              <div className="hs-card-meta-item">
+                                <strong>{property.areaSqft.toLocaleString()}</strong> sq.ft
+                              </div>
+                            )}
                           </div>
-                          <div className="hs-card-price">
-                            <div className="hs-card-price-main">{property.priceDisplay}</div>
-                            <div className="hs-card-cta">
-                              {property.urlType === 'listing' ? 'View listing' : property.urlType === 'project' ? 'View project' : 'Search results'}
-                            </div>
+                        </div>
+                        <div className="hs-card-price">
+                          <div className="hs-card-price-main">{property.priceDisplay}</div>
+                          <div className="hs-card-cta">
+                            {property.urlType === 'listing'
+    ? 'View Listing'
+    : 'View Project'}
                           </div>
-                        </a>
-                      )
-                    })}
-                  </div>
-                </>
+                        </div>
+                      </a>
+                    )
+                  })}
+                </div>
               )}
 
-              {/* Empty state */}
+              {/* Empty */}
               {session.status === 'complete' && session.results.length === 0 && (
                 <div className="hs-empty">
                   <div className="hs-empty-title">No listings extracted</div>
@@ -1001,7 +844,6 @@ export default function Home() {
                   </div>
                 </div>
               )}
-
             </section>
           </>
         )}

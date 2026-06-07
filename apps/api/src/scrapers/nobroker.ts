@@ -1,121 +1,94 @@
-import { chromium } from 'playwright'
+import { getJson } from 'serpapi'
 import { normalizeProperty } from '../normalizer/normalize'
 import { ExtractedProperty } from '../session/sessionStore'
 import { SearchParams } from '../orchestrator/searchOrchestrator'
+
+const LISTING_PATTERNS = [
+  /\/property\/sale\/[^/]+\/[^/]+-nb\d+/i,
+]
+const PROJECT_PATTERNS = [/\/new-projects\//i, /\/project-details\//i]
+
+function scoreUrl(url: string): number {
+  for (const p of LISTING_PATTERNS) if (p.test(url)) return 0
+  for (const p of PROJECT_PATTERNS) if (p.test(url)) return 1
+  // /property/sale/ with 4+ path segments is still a listing-ish  
+  if (/\/property\/sale\//i.test(url) && (url.split('/').length >= 6)) return 0
+  return 2
+}
 
 export async function searchNoBroker(
   params: SearchParams & { resolvedUrl?: string }
 ): Promise<ExtractedProperty[]> {
   const { query, city, bhk } = params
-  console.log('[nobroker] Launching browser...')
+  const API_KEY = process.env.SERPAPI_KEY
 
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-blink-features=AutomationControlled']
-  })
-
-  const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    viewport: { width: 1280, height: 800 }
-  })
-
-  const page = await context.newPage()
-  const results: ExtractedProperty[] = []
-
-  try {
-    // Target search results page directly
-    const bedroomParam = bhk && bhk !== 'Any' ? `&bedroom=${bhk}` : ''
-    const url = `https://www.nobroker.in/property/sale/${city.toLowerCase()}/?searchParam=${encodeURIComponent(query)}${bedroomParam}`
-    console.log('[nobroker] Search URL:', url)
-
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 })
-    await page.waitForTimeout(5000)
-
-    const listings = await page.evaluate(() => {
-      const results: Array<{ title: string; price: string; bhk: string; area: string; locality: string; url: string }> = []
-
-      // NoBroker listing cards
-      const cards = Array.from(document.querySelectorAll(
-        '[class*="bg-white"][class*="rounded-md"][class*="shadow-default"], article, .prop-card'
-      )).slice(0, 8)
-
-      for (const card of cards) {
-        // Individual listing links on NoBroker look like:
-        // /property/sale/bangalore/sobha-carnation/some-slug-nb12345
-        const linkEl = card.querySelector('a[href*="/property/sale/"]') as HTMLAnchorElement | null
-        if (!linkEl) continue
-
-        let href = linkEl.href || ''
-        if (href && !href.startsWith('http')) href = `https://www.nobroker.in${href}`
-
-        // Title
-        const titleEl = card.querySelector('h2, [class*="font-semibold"][class*="text-[#363636]"]')
-        const title = titleEl?.textContent?.trim() || linkEl.textContent?.trim() || ''
-
-        // Price — "text-xl font-bold text-[#333333]" or similar
-        const priceEls = Array.from(card.querySelectorAll('[class*="font-bold"], [class*="text-xl"]'))
-        let price = ''
-        for (const p of priceEls) {
-          const t = p.textContent?.trim() || ''
-          if (/₹|Lacs|Cr/i.test(t)) price = t
-        }
-
-        // BHK + Area
-        let bhk = '', area = ''
-        const textNodes = (card as HTMLElement).innerText.split('\n')
-        for (const t of textNodes) {
-          if (/BHK/i.test(t) && !bhk) bhk = t.trim()
-          if (/sq\.?ft/i.test(t) && !area) area = t.trim()
-        }
-
-        // Locality
-        const localityEl = card.querySelector('[class*="text-[13px]"][class*="text-gray"]')
-        const locality = localityEl?.textContent?.trim() || ''
-
-        if (href && href.includes('nobroker.in')) {
-          results.push({ title: title || 'NoBroker Listing', price, bhk, area, locality, url: href })
-        }
-      }
-
-      // Fallback
-      if (results.length === 0) {
-        const fallbacks = Array.from(document.querySelectorAll('a[href*="/property/sale/"]')) as HTMLAnchorElement[]
-        const seen = new Set()
-        for (const f of fallbacks.slice(0, 6)) {
-          if (seen.has(f.href)) continue
-          seen.add(f.href)
-          let href = f.href
-          if (!href.startsWith('http')) href = `https://www.nobroker.in${href}`
-          results.push({
-            title: f.textContent?.trim() || 'NoBroker Listing',
-            price: '', bhk: '', area: '', locality: '',
-            url: href
-          })
-        }
-      }
-
-      return results
-    })
-
-    console.log(`[nobroker] Extracted ${listings.length} listings`)
-
-    for (const l of listings) {
-      results.push(normalizeProperty({
-        title: l.title,
-        price: l.price,
-        bhk: l.bhk,
-        area: l.area,
-        locality: l.locality,
-        city,
-        url: l.url
-      }, 'nobroker'))
-    }
-
-  } catch (err) {
-    console.error('[nobroker] Error:', err)
-  } finally {
-    await browser.close()
+  if (!API_KEY) {
+    console.warn('[nobroker] Missing SERPAPI_KEY — skipping')
+    return []
   }
 
-  return results
+  const bhkPart = bhk && bhk !== 'Any' ? `${bhk} BHK` : ''
+  const action = params.intent === 'rent' ? 'property for rent' : 'property for sale'
+  const searchQuery = `${query} ${action} ${city} site:nobroker.in`.trim()
+  console.log('[nobroker] SerpAPI query:', searchQuery)
+
+  try {
+    const data = await getJson({
+      engine: 'google',
+      q: searchQuery,
+      api_key: API_KEY,
+      num: 8,
+      gl: 'in',
+      hl: 'en',
+    })
+
+    const organic: any[] = data.organic_results || []
+    const queryTokens = query.toLowerCase().split(/\s+/).filter(t => t.length > 2)
+
+    if (organic.length === 0) {
+      console.log('[nobroker] No SerpAPI results')
+      return []
+    }
+
+    const sorted = [...organic].sort((a, b) => scoreUrl(a.link) - scoreUrl(b.link))
+
+    // Filter obvious false positives
+    const filtered = sorted.filter(r => {
+      const textToSearch = ((r.title || '') + ' ' + (r.snippet || '')).toLowerCase()
+      const matchedTokens = queryTokens.filter(token => textToSearch.includes(token)).length
+      return matchedTokens >= Math.ceil(queryTokens.length * 0.8) // high accuracy threshold
+    })
+
+    console.log(`[nobroker] ${sorted.length} results -> ${filtered.length} after token filtering`)
+
+    const results: ExtractedProperty[] = filtered.map(r => {
+      const titleBhkMatch = (r.title || '').match(/(\d)\s*BHK/i)
+      const titleBhk = titleBhkMatch ? `${titleBhkMatch[1]} BHK` : (bhkPart || '')
+
+      const snippetPriceMatch = (r.snippet || '').match(/[₹]?\s*([\d.]+)\s*(Cr|Lac|L)\b/i)
+      const priceDisplay = snippetPriceMatch
+        ? `₹${snippetPriceMatch[1]} ${snippetPriceMatch[2]}`
+        : ''
+
+      const areaMatch = (r.snippet || '').match(/([\d,]+)\s*sq\.?\s*ft/i)
+      const areaDisplay = areaMatch ? `${areaMatch[1]} sq.ft` : ''
+
+      return normalizeProperty({
+        title: r.title || 'NoBroker Listing',
+        price: priceDisplay,
+        bhk: titleBhk,
+        area: areaDisplay,
+        locality: city,
+        city,
+        url: r.link || '',
+      }, 'nobroker')
+    })
+
+    console.log(`[nobroker] Returning ${results.length} results`)
+    return results
+
+  } catch (err: any) {
+    console.error('[nobroker] SerpAPI error:', err?.message || err)
+    return []
+  }
 }

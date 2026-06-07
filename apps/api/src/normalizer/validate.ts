@@ -29,25 +29,72 @@ export function classifyUrl(url: string, source: ExtractedProperty['source']): E
     const path = u.pathname.toLowerCase()
 
     if (source === 'magicbricks') {
-      if (/\/propertyDetails\//i.test(path)) return 'listing'
-      if (/pr\d{6,}\.html/i.test(path)) return 'listing'
+      // Direct apartment listing
+      if (/\/propertydetails\//i.test(path)) return 'listing'
+      if (/pr\d{5,}/i.test(path)) return 'listing'
       if (/\/property\/residential-for-sale\//i.test(path)) return 'listing'
-      if (/\/projects\//i.test(path) || /\/new-projects\//i.test(path)) return 'project'
+
+      // Inventory / project pages
+      if (
+        path.includes('for-sale') &&
+        (
+          path.includes('project-') ||
+          path.includes('flats-in-') ||
+          path.includes('villa-for-sale') ||
+          path.includes('plots')
+        )
+      ) {
+        return 'project'
+      }
+
+      if (/\/projects\//i.test(path)) return 'project'
+      if (/\/new-projects\//i.test(path)) return 'project'
+
       if (/\/property-for-sale\//i.test(path)) return 'search'
     }
 
     if (source === '99acres') {
+      // Direct apartment page
+      if (/spid-/i.test(path)) return 'listing'
+
+      // Resale inventory pages
+      if (/npffid/i.test(path)) return 'project'
+
       if (/\/detail\//i.test(path)) return 'listing'
-      if (/\/[a-z0-9-]+-\d{6,}(\.html)?/i.test(path)) return 'listing'
-      if (/\/project\//i.test(path) || /\/new-project\//i.test(path) || /\/projects\//i.test(path)) return 'project'
+
+      if (/\/project\//i.test(path)) return 'project'
+      if (/\/new-project\//i.test(path)) return 'project'
+      if (/\/projects\//i.test(path)) return 'project'
+
       if (/\/search\/|\/buy\/|\/rent\//i.test(path)) return 'search'
     }
 
     if (source === 'nobroker') {
-      if (/\/property\/sale\/[^/]+\/[a-z0-9-]+-nb\d+/i.test(path)) return 'listing'
-      if (/\/property\/sale\/[^/]+\/[^/]+-nb\d+/i.test(path)) return 'listing'
-      if (/\/new-projects\//i.test(path) || /\/project-details\//i.test(path)) return 'project'
-      if (/\/property\/sale\//i.test(path) && path.split('/').length >= 5) return 'listing'
+      // Flats-for-sale pages (Project / Inventory)
+      if (
+        path.includes('flats-for-sale') ||
+        path.includes('apartments-for-sale')
+      ) {
+        return 'project'
+      }
+
+      // Project pages
+      if (path.includes('-prjt') || /\/new-projects\//i.test(path) || /\/project-details\//i.test(path)) {
+        return 'project'
+      }
+
+      // Actual individual property listing page (ends with -nb followed by digits)
+      if (/-nb\d+/i.test(path)) {
+        return 'listing'
+      }
+
+      // Generic property sale paths without specific identifiers are often search/inventory
+      if (path.includes('/property/sale/')) {
+        if (u.searchParams.has('searchParam') || path.split('/').length <= 4) {
+          return 'search'
+        }
+        return 'listing' // Deep path likely an actual property
+      }
     }
   } catch {
     // invalid URL
@@ -69,10 +116,32 @@ export function validateProperty(p: ExtractedProperty): ExtractedProperty {
 
   // Heavy penalties for structural issues
   const titleLower = p.title.toLowerCase()
+  const queryWordsToReject = [
+    'photos',
+    'floor plans',
+    'floor plan',
+    'faq',
+    'videos'
+  ]
+
+  if (queryWordsToReject.some(w => titleLower.includes(w))) {
+    p.validationStatus = 'rejected'
+    p.validationScore = 0
+    return p
+  }
   const hasBadTitle = INVALID_TITLES.some(bad => titleLower.includes(bad))
 
   const expectedDomain = KNOWN_DOMAINS[p.source]
   const hasBadDomain = expectedDomain && p.url && !p.url.includes(expectedDomain)
+
+  console.log(
+    '[VALIDATE]',
+    p.source,
+    p.title,
+    p.url,
+    '=>',
+    urlType
+  )
 
   if (hasBadTitle || p.title.length < 5 || !p.url || hasBadDomain || urlType === 'ad' || urlType === 'search') {
     p.validationStatus = 'rejected'

@@ -11,70 +11,86 @@ export interface ReviewMetric {
 }
 
 export interface PropertyReviews {
-  placeId?: string
+  projectName?: string
+
   rating: number | null
   reviewCount: number | null
+
+  reviewsUrl: string
+
+  placeId?: string
+
   pros: ReviewMetric[]
   cons: ReviewMetric[]
-  summary?: string
-  reviewsUrl: string
-}
 
-export interface ExtractedProperty {
-  id: string
-  source: 'magicbricks' | '99acres' | 'nobroker'
-  url: string
-  urlType: 'listing' | 'project' | 'search' | 'ad'
-  title: string
-  price: number | null
-  priceDisplay: string
-  bhk: string
-  areaSqft: number | null
-  areaDisplay: string
-  locality: string
-  city: string
-  createdAt: string
-  validationStatus: string
-  validationScore: number
-}
-
-export interface PropertySource {
-  platform: 'magicbricks' | '99acres' | 'nobroker'
-  url: string
-  urlType: 'listing' | 'project' | 'search' | 'ad'
-  price: number | null
-  priceDisplay: string
-}
-
-export interface NormalizedProperty {
-  id: string // Canonical ID
-  title: string
-  locality: string
-  city: string
-  bhk: string
-  areaSqft: number | null
-  areaDisplay: string
-
-  sources: PropertySource[]
-  bestPrice: number | null
-  bestPriceDisplay: string
-
-  relevanceScore: number
-  rankExplanation?: string
-
-  createdAt: string
-  updatedAt: string
+  topics?: {
+  keyword: string
+  mentions: number
+}[]
 }
 
 export interface SearchSession {
   sessionId: string
   query: string
   status: 'pending' | 'running' | 'complete' | 'error'
+
   results: NormalizedProperty[]
   reviews?: PropertyReviews
+
   startedAt: string
   completedAt?: string
   error?: string
+}
+export interface ExtractedProperty {
+  id: string
+
+  source: 'magicbricks' | '99acres' | 'nobroker'
+
+  title: string
+
+  price: number | null
+  priceDisplay: string
+
+  bhk: string
+  areaSqft: number | null
+  areaDisplay: string
+
+  locality: string
+  city: string
+
+  url: string
+
+  urlType: 'listing' | 'project' | 'search' | 'ad'
+
+  createdAt: string
+
+  validationStatus: 'pending' | 'valid' | 'warning' | 'rejected'
+  validationScore: number
+}
+export interface NormalizedProperty {
+  confidence?: 'high' | 'medium' | 'low'
+
+  id: string
+  source: 'magicbricks' | '99acres' | 'nobroker' | 'housing'
+
+  title: string
+  price: number | null
+  priceDisplay: string
+
+  bhk: number | null
+  areaSqft: number | null
+
+  locality: string
+  city: string
+
+  url: string
+
+  urlType?: 'listing' | 'project' | 'search' | 'ad'
+
+  imageUrl?: string
+  amenities: string[]
+  rating?: number
+  postedBy?: string
 }
 
 export const sessionStore = {
@@ -104,25 +120,48 @@ export const sessionStore = {
     await redis.setex(`session:${sessionId}`, SESSION_TTL, JSON.stringify(session))
   },
 
-  async appendResults(sessionId: string, newResults: NormalizedProperty[]): Promise<void> {
-    const session = await sessionStore.get(sessionId)
-    if (!session) return
 
-    // For V2, orchestrator will deduplicate before calling appendResults.
-    // Here we just merge canonical IDs.
-    const existingIds = new Set(session.results.map(r => r.id))
-    const unique = newResults.filter(r => !existingIds.has(r.id))
+// Inside appendResults:
+async appendResults(
+  sessionId: string,
+  newResults: NormalizedProperty[]
+): Promise<void> {
+  const session = await sessionStore.get(sessionId)
 
-    session.results = [...session.results, ...unique]
-    await redis.setex(`session:${sessionId}`, SESSION_TTL, JSON.stringify(session))
-  },
+  if (!session) return
 
-  async setReviews(sessionId: string, reviews: PropertyReviews): Promise<void> {
-    const session = await sessionStore.get(sessionId)
-    if (!session) return
-    session.reviews = reviews
-    await redis.setex(`session:${sessionId}`, SESSION_TTL, JSON.stringify(session))
-  },
+  const existing = new Set(
+    session.results.map((r: NormalizedProperty) => r.url)
+  )
+
+  const unique = newResults.filter(
+    (r: NormalizedProperty) => r.url && !existing.has(r.url)
+  )
+
+  session.results = [...session.results, ...unique]
+
+  await redis.setex(
+    `session:${sessionId}`,
+    SESSION_TTL,
+    JSON.stringify(session)
+  )
+},
+async setReviews(
+  sessionId: string,
+  reviews: PropertyReviews
+): Promise<void> {
+  const session = await sessionStore.get(sessionId)
+
+  if (!session) return
+
+  session.reviews = reviews
+
+  await redis.setex(
+    `session:${sessionId}`,
+    SESSION_TTL,
+    JSON.stringify(session)
+  )
+},
 
   async setError(sessionId: string, error: string): Promise<void> {
     const session = await sessionStore.get(sessionId)
